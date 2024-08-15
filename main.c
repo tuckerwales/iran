@@ -1,4 +1,4 @@
-#include "usb.h"
+#include <libusb-1.0/libusb.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -104,34 +104,54 @@ int main(int argc, char *argv[])
         crc >>= 8;
     }
 
-    // Initialize USB communication
-    usb_init();
-    usb_find_busses();
-    usb_find_devices();
-    printf("USB ready\n");
-
-    struct usb_dev_handle *device_handle = NULL;
+    // Initialize libusb
+    libusb_context *ctx = NULL;
+    struct libusb_device_handle *device_handle = NULL;
     int dfu_mode = 0;
 
-    // Find the device on the USB bus
-    for (struct usb_bus *bus = usb_get_busses(); bus; bus = bus->next)
+    if (libusb_init(&ctx) < 0)
     {
-        printf("BUS found\n");
-        for (struct usb_device *dev = bus->devices; dev; dev = dev->next)
+        printf("Failed to initialize libusb\n");
+        return -1;
+    }
+
+    printf("USB ready\n");
+
+    // Find the device on the USB bus
+    libusb_device **devices;
+    ssize_t count = libusb_get_device_list(ctx, &devices);
+    if (count < 0)
+    {
+        printf("Failed to get device list\n");
+        libusb_exit(ctx);
+        return -1;
+    }
+
+    for (ssize_t i = 0; i < count; i++)
+    {
+        libusb_device *dev = devices[i];
+        struct libusb_device_descriptor desc;
+        if (libusb_get_device_descriptor(dev, &desc) < 0)
+            continue;
+
+        printf(" %4.4X %4.4X\n", desc.idVendor, desc.idProduct);
+        if (desc.idVendor == 0x5ac && desc.idProduct == 0x1222) // DFU Mode
         {
-            printf(" %4.4X %4.4X\n", dev->descriptor.idVendor, dev->descriptor.idProduct);
-            if (dev->descriptor.idVendor == 0x5ac && dev->descriptor.idProduct == 0x1222) // DFU Mode
+            printf("Found DFU device\n");
+            if (libusb_open(dev, &device_handle) == 0)
             {
-                printf("Found DFU device\n");
-                device_handle = usb_open(dev);
                 dfu_mode = 2;
+                break;
             }
         }
     }
 
+    libusb_free_device_list(devices, 1);
+
     if (!device_handle)
     {
         printf("No device found\n");
+        libusb_exit(ctx);
         return -1;
     }
 
@@ -146,7 +166,9 @@ int main(int argc, char *argv[])
         int bytes_left = total_bytes_to_send - data_offset;
         int chunk_size = (bytes_left > 0x800) ? 0x800 : bytes_left;
 
-        if (usb_control_msg(device_handle, 0x21, 1, packet_index, 0, &buffer[data_offset], chunk_size, 1000) == chunk_size)
+        int actual_length;
+        int res = libusb_control_transfer(device_handle, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, 1, packet_index, 0, &buffer[data_offset], chunk_size, 1000);
+        if (res == chunk_size)
             printf(".");
         else
             printf("x");
@@ -155,7 +177,7 @@ int main(int argc, char *argv[])
             printf("\n");
 
         int response_attempts = 0;
-        while (usb_control_msg(device_handle, 0xA1, 3, 0, 0, (char *)buffer, 6, 1000) == 6 && response_attempts < 5)
+        while (libusb_control_transfer(device_handle, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, 3, 0, 0, (unsigned char *)buffer, 6, 1000) == 6 && response_attempts < 5)
         {
             response_attempts++;
             if (chunk_size == 0)
@@ -169,7 +191,8 @@ int main(int argc, char *argv[])
     }
 
     // Close the USB device
-    usb_close(device_handle);
+    libusb_close(device_handle);
+    libusb_exit(ctx);
 
     return 0;
 }

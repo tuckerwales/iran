@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-lusb -lcrypto
+CFLAGS=-I/opt/homebrew/include/ -L/opt/homebrew/lib/ -lusb-1.0 -lcrypto
 
 .SILENT: iran clean
 	
